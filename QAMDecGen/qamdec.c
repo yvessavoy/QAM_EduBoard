@@ -26,10 +26,7 @@
 #include "qamdec.h"
 
 #define BUFFER_SIZE NR_OF_SAMPLES * 4
-#define AMPLITUDE_HALF_MAX 3072
-#define AMPLITUDE_HALF_MIN 1024
-#define AMPLITUDE_MAX 4096
-#define AMPLITUDE_MIN 0
+#define TOLERANCE 50
 
 QueueHandle_t decoderQueue;
 QueueHandle_t symbolQueue;
@@ -52,70 +49,79 @@ uint16_t toBufferIdx(uint32_t idx) {
 	return idx % 128;
 }
 
-uint16_t uGetNextMaxIdx(uint16_t startIdx) {
-	if (startIdx == 0) {
-		startIdx = 1;
+uint8_t inTolerance(uint16_t val, uint16_t target) {
+	if (target - TOLERANCE < val && val < target + TOLERANCE) {
+		return 1;
+	} else {
+		return 0;
 	}
-	
-	for (int i = startIdx; i < NR_OF_SAMPLES + startIdx && i < BUFFER_SIZE - 1; i++) {
-		if (buffer[i - 1] < buffer[i] && buffer[i + 1] < buffer[i]) {
-			return i;
-		}
-	}
-	
-	return 0;
 }
 
-uint16_t uGetNextMinIdx(uint16_t startIdx) {
-	if (startIdx == 0) {
-		startIdx = 1;
-	}
-	
-	for (int i = startIdx; i < NR_OF_SAMPLES + startIdx && i < BUFFER_SIZE - 1; i++) {
-		if (buffer[i - 1] > buffer[i] && buffer[i + 1] > buffer[i]) {
-			return i;
+uint16_t uGetMaxInBuffer() {
+	uint16_t idx = 0;
+	for (int i = 0; i < BUFFER_SIZE; i++) {
+		if (buffer[i] > buffer[idx]) {
+			idx = i;
 		}
 	}
 	
-	return 0;
+	return buffer[idx];
+}
+
+uint16_t uGetMaxIdxInSample(uint16_t startIdx) {
+	for (int i = startIdx; i < startIdx + NR_OF_SAMPLES; i++) {
+		if (buffer[i - 1] <= buffer[i] && buffer[i + 1] <= buffer[i]) {
+			return i;
+		}
+	}
+}
+
+uint16_t uGetMinIdxInSample(uint16_t startIdx) {
+	for (int i = startIdx; i < startIdx + NR_OF_SAMPLES; i++) {
+		if (buffer[i - 1] >= buffer[i] && buffer[i + 1] >= buffer[i]) {
+			return i;
+		}
+	}
+}
+
+uint16_t uGetMinMaxInSample(uint16_t startIdx) {
+	for (int i = startIdx; i < startIdx + NR_OF_SAMPLES; i++) {
+		if ((buffer[i - 1] < buffer[i] && buffer[i + 1] < buffer[i]) || (buffer[i - 1] > buffer[i] && buffer[i + 1] > buffer[i])) {
+			return i;
+		}
+	}
 }
 
 uint16_t uGetNullPointIdx(uint16_t startIdx) {
-	uint16_t nextMinIdx = uGetNextMinIdx(startIdx);
-	uint16_t nextMaxIdx = uGetNextMaxIdx(startIdx);
-	uint16_t nullPointIdx;
+	// First we get the next min or max within a full sin wave
+	int16_t nextMinMaxIdx;
+	do {
+		startIdx++;
+		nextMinMaxIdx = uGetMinMaxInSample(startIdx);
+	} while(nextMinMaxIdx < NR_OF_SAMPLES / 4);
 	
-	if ((int16_t) nextMinIdx - (NR_OF_SAMPLES / 4) >= 0) {
-		nullPointIdx  = nextMinIdx - (NR_OF_SAMPLES / 4);
-	} else {
-		nullPointIdx  = nextMaxIdx - (NR_OF_SAMPLES / 4);
-	}
-	
-	uint16_t nullPointVal = buffer[nullPointIdx];
+	// The nullpoint is a quater curve before the min/max
+	uint16_t nullPointIdx = nextMinMaxIdx - (NR_OF_SAMPLES / 4);
+	uint16_t nullPointVal = buffer[nullPointIdx];	
+	uint16_t nextMinIdx = uGetMinIdxInSample(nullPointIdx + 1);
+	uint16_t nextMaxIdx = uGetMaxIdxInSample(nullPointIdx + 1);
 	
 	while(1) {
-		if (nullPointVal == buffer[nextMinIdx] || nullPointVal == buffer[nextMaxIdx] || // Phase adjustment detected
-		   (nullPointVal * 2) - buffer[nextMinIdx] != buffer[nextMaxIdx]) {             // Amplitude adjustment detected
+		if (inTolerance(nullPointVal, buffer[nextMinIdx]) || inTolerance(nullPointVal, buffer[nextMaxIdx]) || // Phase adjustment detected
+		   !inTolerance((nullPointVal * 2) - buffer[nextMinIdx], buffer[nextMaxIdx])) {                       // Amplitude adjustment detected
 			nullPointIdx += NR_OF_SAMPLES / 2;
 			nullPointVal = buffer[nullPointIdx];
-			nextMinIdx = uGetNextMinIdx(nullPointIdx);
-			nextMaxIdx = uGetNextMaxIdx(nullPointIdx);
+			nextMinIdx = uGetMinIdxInSample(nullPointIdx + 1);
+			nextMaxIdx = uGetMinIdxInSample(nullPointIdx + 1);
 		} else {
 			// Neither do we have an amplitude nor a phase adjustment, so we found a correct nullpoint
 			return nullPointIdx;
 		}
 		
+		// This if-statement should never be true as we have a buffer that can hold
+		// 4 full sin-waves, so we should at least find one valid nullpoint
 		if (nullPointIdx + (NR_OF_SAMPLES / 2) > BUFFER_SIZE - 1) {
-			nextMinIdx = uGetNextMinIdx(0);
-			nextMaxIdx = uGetNextMaxIdx(0);
-			
-			if ((int16_t) nextMinIdx - (NR_OF_SAMPLES / 4) >= 0) {
-				nullPointIdx  = nextMinIdx - (NR_OF_SAMPLES / 4);
-			} else {
-				nullPointIdx  = nextMaxIdx - (NR_OF_SAMPLES / 4);
-			}
-			
-			nullPointVal = buffer[nullPointIdx];
+			return BUFFER_SIZE;
 		}
 	}
 }
@@ -150,22 +156,40 @@ void vTaskDetectSymbols(void *pvParameters) {
 	uint16_t periodMinIdx;
 	uint16_t periodMaxIdx;
 	uint8_t symbol;
+	uint16_t maxAmplitude100 = 0;
+	uint16_t minAmplitude100 = 0;
+	uint16_t maxAmplitude50 = 0;
+	uint16_t minAmplitude50 = 0;
 	
 	for(;;) {
 		// Don't get ahead of the new data pointer
 		if (decoderIdx >= newDataIdx) {
-			vTaskDelay(1);
+			vTaskDelay(1 / portTICK_RATE_MS);
 			continue;
 		}
 		
 		nullPoint = uGetNullPointIdx(toBufferIdx(decoderIdx));
-		decoderIdx = nullPoint + NR_OF_SAMPLES;
-		periodMinIdx = uGetNextMinIdx(nullPoint);
-		periodMaxIdx = uGetNextMaxIdx(nullPoint);
+		// If we didn't find a valid one, we get BUFFER_SIZE returned
+		// so we wait and continue
+		if (nullPoint == BUFFER_SIZE) {
+			vTaskDelay(1 / portTICK_RATE_MS);
+			continue;
+		} else {
+			decoderIdx = nullPoint + NR_OF_SAMPLES;
+		}
+		
+		periodMinIdx = uGetMinIdxInSample(nullPoint + 1);
+		periodMaxIdx = uGetMaxIdxInSample(nullPoint + 1);
 		symbol = 0;
 		
+		// Continously check min and max amplitude
+		maxAmplitude100 = uGetMaxInBuffer();
+		uint16_t diff = (maxAmplitude100 - buffer[nullPoint]) / 2;
+		maxAmplitude50 = buffer[nullPoint] + diff;
+		minAmplitude50 = buffer[nullPoint] - diff;
+		
 		// Check for amplitude adjustment
-		if (buffer[periodMinIdx] == AMPLITUDE_HALF_MIN && buffer[periodMaxIdx] == AMPLITUDE_HALF_MAX) {
+		if (inTolerance(buffer[periodMinIdx], minAmplitude50) && inTolerance(buffer[periodMaxIdx], maxAmplitude50)) {
 			symbol |= (1 << 1);
 		}
 		
@@ -214,8 +238,8 @@ void vQuamDec()
 		vTaskDelay(3/portTICK_RATE_MS);
 	}
 		
-	xTaskCreate(vTaskFillBuffer, "fillBuffer", configMINIMAL_STACK_SIZE + 20, NULL, 1, NULL);
-	//xTaskCreate(vTaskDetectSymbols, "detectSymbols", configMINIMAL_STACK_SIZE + 10, NULL, 1, NULL);
+	xTaskCreate(vTaskFillBuffer, "fillBuffer", configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
+	xTaskCreate(vTaskDetectSymbols, "detectSymbols", configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
 	//xTaskCreate(vTaskProtocol, "protocol", configMINIMAL_STACK_SIZE + 10, NULL, 1, NULL);
 }
 

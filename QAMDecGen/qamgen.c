@@ -43,7 +43,7 @@ const int16_t sinLookup50[NR_OF_SAMPLES*2] = {0x0,0xC8,0x187,0x238,0x2D3,0x353,0
 0xFC01,0xFC15,0xFC4F,0xFCAD,0xFD2D,0xFDC8,0xFE79,0xFF38,};
 
 #define SENDBUFFER_SIZE 20
-uint8_t sendbuffer[SENDBUFFER_SIZE] = {0,1,0,1,0,1,2,1,3,0,1,1,3,2,1,0,0,1,0,1};
+uint8_t sendbuffer[SENDBUFFER_SIZE] = {1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2,1,2};
 
 
 
