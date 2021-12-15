@@ -55,14 +55,12 @@ int main(void)
 	initADCTimer();
 	initDecDMA();
 	
-	xTaskCreate(vQuamGen, "quamGen", configMINIMAL_STACK_SIZE + 500, NULL, 3, NULL);
+	xTaskCreate(vQuamGen, "quamGen", configMINIMAL_STACK_SIZE + 500, NULL, 4, NULL);
 	vQuamDec();
 
 	vDisplayClear();
-	vDisplayWriteStringAtPos(0,0,"FreeRTOS 10.0.1");
-	vDisplayWriteStringAtPos(1,0,"EDUBoard 1.0");
-	vDisplayWriteStringAtPos(2,0,"QAMDECGEN-Base");
-	vDisplayWriteStringAtPos(3,0,"ResetReason: %d", reason);
+	vDisplayWriteStringAtPos(0,0,"Newest Message:");
+	
 	vTaskStartScheduler();
 	return 0;
 }

@@ -43,6 +43,11 @@ typedef enum {
 	P_Checksum
 } State_Protocol;
 
+typedef struct {
+	uint8_t len;
+	char *data;
+} DataMessage;
+
 uint16_t buffer[BUFFER_SIZE];
 
 uint8_t toBufferIdx(uint32_t idx) {
@@ -110,6 +115,9 @@ int32_t uGetNullPointIdx(uint32_t startIdx) {
 	uint8_t nextMinMaxIdx = uGetMinMaxInSample(minMaxIdx + 5);
 	uint8_t npIdx = minMaxIdx - (NR_OF_SAMPLES / 4);
 	
+	// Check if the value of the nullpoint is near the average, and if
+	// not, check if the previous or next one is, because it could be
+	// that the min or max are shifted by 1
 	if (!inTolerance(buffer[npIdx], npMedian)) {
 		if (inTolerance(buffer[npIdx - 1], npMedian)) {
 			npIdx--;
@@ -131,17 +139,27 @@ int32_t uGetNullPointIdx(uint32_t startIdx) {
 
 // This task receives symbols from the Symbol-Queue (vTaskDetectSymbol),
 // applies the defined protocol and sends data bytes into the data queue.
-uint8_t data[255];
+char data[255];
+uint8_t queueContent[255];
 void vTaskProtocol(void *pvParameters) {
 	(void) pvParameters;
 	uint8_t queueItem;
 	uint16_t idx = 0;
+	uint8_t qcIdx = 0;
 	uint8_t dataLength;
 	State_Protocol state = P_Idle1;
 	
 	for(;;) {
 		while(uxQueueMessagesWaiting(symbolQueue) > 0) {
 			if(xQueueReceive(symbolQueue, &queueItem, portMAX_DELAY) == pdTRUE) {
+				// Store all received items for debugging / verification purpose
+				queueContent[qcIdx] = queueItem;
+				qcIdx++;
+				
+				if (qcIdx == 255) {
+					qcIdx = 0;
+				}
+				
 				switch (state) {
 					case P_Idle1:
 						if (queueItem == 2) {
@@ -172,7 +190,7 @@ void vTaskProtocol(void *pvParameters) {
 						break;
 						
 					case P_Length:
-						// The length is 4 symbols / 1 byte
+						// The length is 4 symbols or 1 byte
 						dataLength |= (queueItem << (6 - (2 * idx)));
 						
 						if (idx == 3) {
@@ -197,7 +215,8 @@ void vTaskProtocol(void *pvParameters) {
 						
 					case P_Checksum:
 						state = P_Idle1;
-						break;					
+						
+						break;
 				}
 			}
 		
@@ -212,20 +231,22 @@ void vTaskProtocol(void *pvParameters) {
 // current data held in buffer and finding symbols
 // in it. For every symbol that is found, a new
 // message in the Symbol-Queue is queued
-int32_t nullPointIdx;
-uint8_t bufferNullPointIdx;
-uint8_t periodMinIdx;
-uint8_t periodMaxIdx;
 void vTaskDetectSymbols(void *pvParameters) {
 	(void) pvParameters;
 	
 	decoderIdx = 0;
 	npMedian = 1190;
 	uint8_t symbol;
+	int32_t nullPointIdx;
+	uint8_t bufferNullPointIdx;
+	uint8_t periodMinIdx;
+	uint8_t periodMaxIdx;
 	uint16_t maxAmplitude100 = 0;
 	uint16_t maxAmplitude50 = 0;
 	uint16_t minAmplitude50 = 0;
 	uint16_t diff = 0;
+	
+	maxAmplitude100 = 2192;
 	
 	for(;;) {
 		// Don't get ahead of the new data pointer
@@ -250,14 +271,11 @@ void vTaskDetectSymbols(void *pvParameters) {
 			periodMinIdx = bufferNullPointIdx + 24;
 			periodMaxIdx = bufferNullPointIdx + 8;
 		}
-		
-		// Continously check and adjust min and max amplitude
-		//maxAmplitude100 = uGetMaxInBuffer();
-		maxAmplitude100 = 2192;
+
 		diff = (maxAmplitude100 - buffer[bufferNullPointIdx]) / 2;
 		maxAmplitude50 = buffer[bufferNullPointIdx] + diff;
 		minAmplitude50 = buffer[bufferNullPointIdx] - diff;
-		
+	
 		symbol = 0;
 		// Check for amplitude adjustment
 		if (inTolerance(buffer[periodMinIdx], minAmplitude50) && inTolerance(buffer[periodMaxIdx], maxAmplitude50)) {
@@ -269,7 +287,6 @@ void vTaskDetectSymbols(void *pvParameters) {
 			symbol |= (1 << 0);
 		}
 		
-		// 1,2,1,2, 1,2,1,3, 0,0,0,1, 1,0,2,0, 1,2,1,2
 		xQueueSend(symbolQueue, &symbol, 0);
 	}
 }
@@ -289,7 +306,6 @@ void vTaskFillBuffer(void *pvParameters) {
 	for(;;) {
 		while(uxQueueMessagesWaiting(decoderQueue) > 0) {
 			if(xQueueReceive(decoderQueue, &bufferelement[0], portMAX_DELAY) == pdTRUE) {
-				// 1,2,1,3, 0,0,0,1, 1,0,2,0, 1,2,1,2
 				for (int i = 0; i < NR_OF_SAMPLES; i++) {
 					bufferIdx = toBufferIdx(newDataIdx);
 					buffer[bufferIdx] = bufferelement[i];
@@ -304,8 +320,8 @@ void vTaskFillBuffer(void *pvParameters) {
 
 void vQuamDec()
 {
-	decoderQueue = xQueueCreate(5, NR_OF_SAMPLES * sizeof(int16_t));
-	symbolQueue = xQueueCreate(5, sizeof(uint8_t));
+	decoderQueue = xQueueCreate(20, NR_OF_SAMPLES * sizeof(int16_t));
+	symbolQueue = xQueueCreate(20, sizeof(uint8_t));
 	
 	/*while(evDMAState == NULL) {
 		vTaskDelay(3/portTICK_RATE_MS);
