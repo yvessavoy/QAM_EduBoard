@@ -55,7 +55,7 @@ int main(void)
 	initADCTimer();
 	initDecDMA();
 	
-	xTaskCreate(vQuamGen, NULL, configMINIMAL_STACK_SIZE + 500, NULL, 2, NULL);
+	xTaskCreate(vQuamGen, "quamGen", configMINIMAL_STACK_SIZE + 500, NULL, 3, NULL);
 	vQuamDec();
 
 	vDisplayClear();
