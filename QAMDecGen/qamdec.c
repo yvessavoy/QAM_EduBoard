@@ -140,26 +140,18 @@ int32_t uGetNullPointIdx(uint32_t startIdx) {
 // This task receives symbols from the Symbol-Queue (vTaskDetectSymbol),
 // applies the defined protocol and sends data bytes into the data queue.
 char data[255];
-uint8_t queueContent[255];
 void vTaskProtocol(void *pvParameters) {
 	(void) pvParameters;
 	uint8_t queueItem;
 	uint16_t idx = 0;
-	uint8_t qcIdx = 0;
 	uint8_t dataLength;
+	uint16_t checksum;
+	uint16_t rxChecksum;
 	State_Protocol state = P_Idle1;
 	
 	for(;;) {
 		while(uxQueueMessagesWaiting(symbolQueue) > 0) {
 			if(xQueueReceive(symbolQueue, &queueItem, portMAX_DELAY) == pdTRUE) {
-				// Store all received items for debugging / verification purpose
-				queueContent[qcIdx] = queueItem;
-				qcIdx++;
-				
-				if (qcIdx == 255) {
-					qcIdx = 0;
-				}
-				
 				switch (state) {
 					case P_Idle1:
 						if (queueItem == 2) {
@@ -196,6 +188,7 @@ void vTaskProtocol(void *pvParameters) {
 						if (idx == 3) {
 							state = P_Data;
 							idx = 0;
+							checksum = dataLength;
 						} else {
 							idx++;
 						}
@@ -205,25 +198,40 @@ void vTaskProtocol(void *pvParameters) {
 					case P_Data:
 						// Int division gives us the correct index
 						data[idx / 4] |= (queueItem << 6 - (2 * (idx % 4)));
+						checksum += queueItem;
+						
 						idx++;
 						
 						if (idx / 4 == dataLength) {
 							state = P_Checksum;
+							rxChecksum = 0;
+							idx = 0;
 						}
 					
 						break;
 						
 					case P_Checksum:
-						state = P_Idle1;
+						// The checksum is 16 bit long, so 8 symbols will
+						// build the checksum
+						idx++;
+						rxChecksum |= (queueItem << (16 - (idx * 2)));
+						
+						if (idx == 8) {
+							// Verify that the sent and calculated checksums match
+							if (rxChecksum == checksum) {
+								// TODO: Send data-buffer over UART
+							} else {
+								// TODO: Send static message over UART
+							}
+							state = P_Idle1;
+						}
 						
 						break;
 				}
 			}
-		
-			vTaskDelay(1 / portTICK_RATE_MS);
 		}
 
-		vTaskDelay(1 / portTICK_RATE_MS);
+		vTaskDelay(5 / portTICK_RATE_MS);
 	}
 }
 
@@ -249,45 +257,43 @@ void vTaskDetectSymbols(void *pvParameters) {
 	maxAmplitude100 = 2192;
 	
 	for(;;) {
-		// Don't get ahead of the new data pointer
-		while (decoderIdx + NR_OF_SAMPLES > newDataIdx) {
-			vTaskDelay(1 / portTICK_RATE_MS);
-		}
-		
-		nullPointIdx = uGetNullPointIdx(decoderIdx);
-		if (nullPointIdx == -1) {
-			decoderIdx += NR_OF_SAMPLES;
-			vTaskDelay(1 / portTICK_RATE_MS);
-			continue;
-		} else {
-			decoderIdx = nullPointIdx + NR_OF_SAMPLES;
-		}
-		
-		bufferNullPointIdx = toBufferIdx(nullPointIdx);
-		if (buffer[bufferNullPointIdx + 8] < buffer[bufferNullPointIdx + 24]) {
-			periodMinIdx = bufferNullPointIdx + 8;
-			periodMaxIdx = bufferNullPointIdx + 24;
-		} else {
-			periodMinIdx = bufferNullPointIdx + 24;
-			periodMaxIdx = bufferNullPointIdx + 8;
-		}
+		while (decoderIdx + NR_OF_SAMPLES < newDataIdx) {
+			nullPointIdx = uGetNullPointIdx(decoderIdx);
+			if (nullPointIdx == -1) {
+				decoderIdx += NR_OF_SAMPLES;
+				continue;
+			} else {
+				decoderIdx = nullPointIdx + NR_OF_SAMPLES;
+			}
+			
+			bufferNullPointIdx = toBufferIdx(nullPointIdx);
+			if (buffer[bufferNullPointIdx + 8] < buffer[bufferNullPointIdx + 24]) {
+				periodMinIdx = bufferNullPointIdx + 8;
+				periodMaxIdx = bufferNullPointIdx + 24;
+			} else {
+				periodMinIdx = bufferNullPointIdx + 24;
+				periodMaxIdx = bufferNullPointIdx + 8;
+			}
 
-		diff = (maxAmplitude100 - buffer[bufferNullPointIdx]) / 2;
-		maxAmplitude50 = buffer[bufferNullPointIdx] + diff;
-		minAmplitude50 = buffer[bufferNullPointIdx] - diff;
-	
-		symbol = 0;
-		// Check for amplitude adjustment
-		if (inTolerance(buffer[periodMinIdx], minAmplitude50) && inTolerance(buffer[periodMaxIdx], maxAmplitude50)) {
-			symbol |= (1 << 1);
-		}
+			diff = (maxAmplitude100 - buffer[bufferNullPointIdx]) / 2;
+			maxAmplitude50 = buffer[bufferNullPointIdx] + diff;
+			minAmplitude50 = buffer[bufferNullPointIdx] - diff;
+			
+			symbol = 0;
+			// Check for amplitude adjustment
+			if (inTolerance(buffer[periodMinIdx], minAmplitude50) && inTolerance(buffer[periodMaxIdx], maxAmplitude50)) {
+				symbol |= (1 << 1);
+			}
+			
+			// Check for phase adjustment
+			if (periodMinIdx < periodMaxIdx) {
+				symbol |= (1 << 0);
+			}
+			
+			xQueueSend(symbolQueue, &symbol, 0);
+		} 
 		
-		// Check for phase adjustment
-		if (periodMinIdx < periodMaxIdx) {
-			symbol |= (1 << 0);
-		}
-		
-		xQueueSend(symbolQueue, &symbol, 0);
+		vTaskDelay(5 / portTICK_RATE_MS);
 	}
 }
 
@@ -312,23 +318,22 @@ void vTaskFillBuffer(void *pvParameters) {
 					newDataIdx++;
 				}
 			}
-			vTaskDelay(1 / portTICK_RATE_MS);
 		}
-		vTaskDelay(2 / portTICK_RATE_MS);
+		vTaskDelay(1 / portTICK_RATE_MS);
 	}
 }
 
 void vQuamDec()
 {
 	decoderQueue = xQueueCreate(20, NR_OF_SAMPLES * sizeof(int16_t));
-	symbolQueue = xQueueCreate(20, sizeof(uint8_t));
+	symbolQueue = xQueueCreate(40, sizeof(uint8_t));
 	
 	/*while(evDMAState == NULL) {
 		vTaskDelay(3/portTICK_RATE_MS);
 	}*/
 		
-	xTaskCreate(vTaskFillBuffer, "fillBuffer", configMINIMAL_STACK_SIZE + 100, NULL, 2, NULL);
-	xTaskCreate(vTaskDetectSymbols, "detectSymbols", configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
+	xTaskCreate(vTaskFillBuffer, "fillBuffer", configMINIMAL_STACK_SIZE + 100, NULL, 3, NULL);
+	xTaskCreate(vTaskDetectSymbols, "detectSymbols", configMINIMAL_STACK_SIZE + 100, NULL, 2, NULL);
 	xTaskCreate(vTaskProtocol, "protocol", configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
 }
 
