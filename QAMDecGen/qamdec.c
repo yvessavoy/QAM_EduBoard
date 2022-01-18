@@ -218,11 +218,19 @@ void vTaskProtocol(void *pvParameters) {
 						
 						if (idx == 8) {
 							// Verify that the sent and calculated checksums match
-							if (rxChecksum == checksum) {
-								// TODO: Send data-buffer over UART
-							} else {
-								// TODO: Send static message over UART
+							if (rxChecksum != checksum) {
+								strcpy(data, "Checksum error");
 							}
+							
+							for (int i = 0; i < 256; i++) {
+								if (data[i] == 0) {
+									break;
+								}
+								
+								while(!(USARTC0.STATUS & USART_DREIF_bm));
+								USARTC0.DATA = data[i];
+							}
+							
 							state = P_Idle1;
 						}
 						
@@ -323,18 +331,39 @@ void vTaskFillBuffer(void *pvParameters) {
 	}
 }
 
+void vInitUart(){
+	// Baudrate 9600
+	USARTC0.BAUDCTRLA = 0xD0 & 0xFF;
+	USARTC0.BAUDCTRLB |= ((0 & 0x0F) << 0x04);
+	USARTC0.CTRLA = USART_RXCINTLVL_LO_gc;
+	USARTC0.STATUS |= USART_RXCIF_bm;
+	USARTC0.CTRLB = USART_TXEN_bm;
+	USARTC0.CTRLC = USART_CHSIZE_8BIT_gc;
+	USARTC0.CTRLC &= ~(USART_PMODE0_bm | USART_PMODE1_bm | USART_SBMODE_bm);
+	PORTC.DIR = 0x08;
+	
+	char* data = "Decoder-UART Init\n";
+	while(*data)
+	{
+		while(!(USARTC0.STATUS & USART_DREIF_bm));
+		USARTC0.DATA = *data++;
+	}
+}
+
 void vQuamDec()
 {
 	decoderQueue = xQueueCreate(20, NR_OF_SAMPLES * sizeof(int16_t));
 	symbolQueue = xQueueCreate(40, sizeof(uint8_t));
 	
+	vInitUart();
+	
 	/*while(evDMAState == NULL) {
 		vTaskDelay(3/portTICK_RATE_MS);
 	}*/
 		
-	xTaskCreate(vTaskFillBuffer, "fillBuffer", configMINIMAL_STACK_SIZE + 100, NULL, 3, NULL);
-	xTaskCreate(vTaskDetectSymbols, "detectSymbols", configMINIMAL_STACK_SIZE + 100, NULL, 2, NULL);
-	xTaskCreate(vTaskProtocol, "protocol", configMINIMAL_STACK_SIZE + 100, NULL, 1, NULL);
+	xTaskCreate(vTaskFillBuffer, "fillBuffer", configMINIMAL_STACK_SIZE + 150, NULL, 3, NULL);
+	xTaskCreate(vTaskDetectSymbols, "detectSymbols", configMINIMAL_STACK_SIZE + 150, NULL, 2, NULL);
+	xTaskCreate(vTaskProtocol, "protocol", configMINIMAL_STACK_SIZE + 150, NULL, 1, NULL);
 }
 
 void fillDecoderQueue(uint16_t buffer[NR_OF_SAMPLES])

@@ -83,7 +83,7 @@
  //
  void software_reset(void)
  {	 
-	 asm("nop");
+	 //asm("nop");
 	 CPU_CCP  = CCP_IOREG_gc;
 	 RST.CTRL = RST_SWRST_bm ;	 
  }
