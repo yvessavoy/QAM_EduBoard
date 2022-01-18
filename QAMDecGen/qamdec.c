@@ -82,7 +82,7 @@ uint8_t uGetMaxIdxInSample(uint8_t startIdx) {
 }
 
 uint8_t uGetMinIdxInSample(uint8_t startIdx) {
-	for (uint8_t i = startIdx; i < startIdx + NR_OF_SAMPLES - 1; i++) {
+	for (int i = startIdx; i < startIdx + NR_OF_SAMPLES - 1; i++) {
 		if (buffer[i - 1] > buffer[i] && buffer[i + 1] > buffer[i]) {
 			return i;
 		}
@@ -92,10 +92,14 @@ uint8_t uGetMinIdxInSample(uint8_t startIdx) {
 		}
 	}
 }
-
+uint8_t lmin, lmax, ls;
 uint8_t uGetMinMaxInSample(uint8_t startIdx) {
 	uint8_t min = uGetMinIdxInSample(startIdx);
 	uint8_t max = uGetMaxIdxInSample(startIdx);
+	
+	lmin = min;
+	lmax = max;
+	ls = startIdx;
 	
 	if (min < max) {
 		return min;
@@ -103,8 +107,12 @@ uint8_t uGetMinMaxInSample(uint8_t startIdx) {
 		return max;
 	}
 }
-
+uint8_t gmmi, gnmmi, b, c, d, e, h, i, j, prevnp;
+uint16_t f, g, gdecoder, gnewdata;
 int32_t uGetNullPointIdx(uint32_t startIdx) {
+	gdecoder = decoderIdx;
+	gnewdata = newDataIdx;
+	
 	uint8_t bufferIdx = toBufferIdx(startIdx);
 	uint8_t minMaxIdx = uGetMinMaxInSample(bufferIdx + 5);
 	
@@ -118,6 +126,10 @@ int32_t uGetNullPointIdx(uint32_t startIdx) {
 	// Check if the value of the nullpoint is near the average, and if
 	// not, check if the previous or next one is, because it could be
 	// that the min or max are shifted by 1
+	prevnp = npIdx;
+	
+	gmmi = minMaxIdx;
+	gnmmi = nextMinMaxIdx;
 	if (!inTolerance(buffer[npIdx], npMedian)) {
 		if (inTolerance(buffer[npIdx - 1], npMedian)) {
 			npIdx--;
@@ -131,7 +143,18 @@ int32_t uGetNullPointIdx(uint32_t startIdx) {
 	// Check for phase or amplitude adjustment in the current sample; This would mean we are
 	// in the middle and not at the start of a sample, so move the start half a period forward
 	if (inTolerance(buffer[npIdx], buffer[minMaxIdx]) || inTolerance(buffer[npIdx], buffer[nextMinMaxIdx]) || !inTolerance((buffer[npIdx] * 2) - buffer[minMaxIdx], buffer[nextMinMaxIdx])) {
+		b = 1;
+		c = inTolerance(buffer[npIdx], buffer[minMaxIdx]);
+		d = inTolerance(buffer[npIdx], buffer[nextMinMaxIdx]);
+		e = !inTolerance((buffer[npIdx] * 2) - buffer[minMaxIdx], buffer[nextMinMaxIdx]);
+		f = (buffer[npIdx] * 2) - buffer[minMaxIdx];
+		g = buffer[nextMinMaxIdx];
+		h = npIdx;
+		i = minMaxIdx;
+		j = nextMinMaxIdx;
 		npIdx += (NR_OF_SAMPLES / 2);
+	} else {
+		b = 0;
 	}
 	
 	return (224 * (startIdx / 224)) + npIdx;
@@ -147,11 +170,12 @@ void vTaskProtocol(void *pvParameters) {
 	uint8_t dataLength;
 	uint16_t checksum;
 	uint16_t rxChecksum;
+	char checksumBuf[50];
 	State_Protocol state = P_Idle1;
 	
 	for(;;) {
 		while(uxQueueMessagesWaiting(symbolQueue) > 0) {
-			if(xQueueReceive(symbolQueue, &queueItem, portMAX_DELAY) == pdTRUE) {
+			if(xQueueReceive(symbolQueue, &queueItem, portMAX_DELAY) == pdTRUE) {				
 				switch (state) {
 					case P_Idle1:
 						if (queueItem == 2) {
@@ -197,7 +221,7 @@ void vTaskProtocol(void *pvParameters) {
 						
 					case P_Data:
 						// Int division gives us the correct index
-						data[idx / 4] |= (queueItem << 6 - (2 * (idx % 4)));
+						data[idx / 4] |= (queueItem << (6 - (2 * (idx % 4))));
 						checksum += queueItem;
 						
 						idx++;
@@ -218,17 +242,20 @@ void vTaskProtocol(void *pvParameters) {
 						
 						if (idx == 8) {
 							// Verify that the sent and calculated checksums match
-							if (rxChecksum != checksum) {
-								strcpy(data, "Checksum error");
-							}
-							
-							for (int i = 0; i < 256; i++) {
-								if (data[i] == 0) {
-									break;
-								}
+							/*if (rxChecksum != checksum) {
+								sprintf(checksumBuf, "Checksum Error, calculated %d, received %d\r\n", checksum, rxChecksum);
+								strcpy(data, checksumBuf);
+							}*/
+						
+							if (rxChecksum == checksum) {
+								for (int i = 0; i < 256; i++) {
+									if (data[i] == 0) {
+										break;
+									}
 								
-								while(!(USARTC0.STATUS & USART_DREIF_bm));
-								USARTC0.DATA = data[i];
+									while(!(USARTC0.STATUS & USART_DREIF_bm));
+									USARTC0.DATA = data[i];
+								}
 							}
 							
 							state = P_Idle1;
@@ -247,6 +274,8 @@ void vTaskProtocol(void *pvParameters) {
 // current data held in buffer and finding symbols
 // in it. For every symbol that is found, a new
 // message in the Symbol-Queue is queued
+uint8_t nullpoints[255];
+uint8_t a = 0;
 void vTaskDetectSymbols(void *pvParameters) {
 	(void) pvParameters;
 	
@@ -275,6 +304,13 @@ void vTaskDetectSymbols(void *pvParameters) {
 			}
 			
 			bufferNullPointIdx = toBufferIdx(nullPointIdx);
+			
+			nullpoints[a] = bufferNullPointIdx;
+			a++;
+			if (a >= 255) {
+				a = 0;
+			}
+			
 			if (buffer[bufferNullPointIdx + 8] < buffer[bufferNullPointIdx + 24]) {
 				periodMinIdx = bufferNullPointIdx + 8;
 				periodMaxIdx = bufferNullPointIdx + 24;
@@ -298,7 +334,11 @@ void vTaskDetectSymbols(void *pvParameters) {
 				symbol |= (1 << 0);
 			}
 			
-			xQueueSend(symbolQueue, &symbol, 0);
+			if (symbol == 3) {
+				symbol = 1;
+			}
+			
+			xQueueSend(symbolQueue, &symbol, 0); // 1,2,1,3, 0,0,1,1, 1,0,2,0, 1,2,1,1, 1,2,3,0, 1,2,3,0, 1,2,3,3, 0,0,0,0, 0,2,0,2, 1,2,1,2
 		} 
 		
 		vTaskDelay(5 / portTICK_RATE_MS);
@@ -353,7 +393,7 @@ void vInitUart(){
 void vQuamDec()
 {
 	decoderQueue = xQueueCreate(20, NR_OF_SAMPLES * sizeof(int16_t));
-	symbolQueue = xQueueCreate(40, sizeof(uint8_t));
+	symbolQueue = xQueueCreate(250, sizeof(uint8_t));
 	
 	vInitUart();
 	
@@ -363,7 +403,7 @@ void vQuamDec()
 		
 	xTaskCreate(vTaskFillBuffer, "fillBuffer", configMINIMAL_STACK_SIZE + 150, NULL, 3, NULL);
 	xTaskCreate(vTaskDetectSymbols, "detectSymbols", configMINIMAL_STACK_SIZE + 150, NULL, 2, NULL);
-	xTaskCreate(vTaskProtocol, "protocol", configMINIMAL_STACK_SIZE + 150, NULL, 1, NULL);
+	xTaskCreate(vTaskProtocol, "protocol", configMINIMAL_STACK_SIZE + 150, NULL, 2, NULL);
 }
 
 void fillDecoderQueue(uint16_t buffer[NR_OF_SAMPLES])
