@@ -25,7 +25,7 @@
 #include "qaminit.h"
 #include "qamdec.h"
 
-#define BUFFER_SIZE NR_OF_SAMPLES * 7
+#define BUFFER_SIZE NR_OF_SAMPLES * 12
 #define TOLERANCE 60
 
 QueueHandle_t decoderQueue;
@@ -44,17 +44,17 @@ typedef enum {
 } State_Protocol;
 
 typedef struct {
-	uint8_t len;
+	uint16_t len;
 	char *data;
 } DataMessage;
 
 uint16_t buffer[BUFFER_SIZE];
 
-uint8_t toBufferIdx(uint32_t idx) {
-	return idx % 224;
+uint16_t toBufferIdx(uint32_t idx) {
+	return idx % 384;
 }
 
-uint8_t inTolerance(uint16_t val, uint16_t target) {
+uint16_t inTolerance(uint16_t val, uint16_t target) {
 	if (target - TOLERANCE <= val && val <= target + TOLERANCE) {
 		return 1;
 	} else {
@@ -62,18 +62,7 @@ uint8_t inTolerance(uint16_t val, uint16_t target) {
 	}
 }
 
-uint16_t uGetMaxInBuffer() {
-	uint16_t idx = 0;
-	for (int i = 0; i < BUFFER_SIZE; i++) {
-		if (buffer[i] > buffer[idx]) {
-			idx = i;
-		}
-	}
-	
-	return buffer[idx];
-}
-
-uint8_t uGetMaxIdxInSample(uint8_t startIdx) {
+uint16_t uGetMaxIdxInSample(uint16_t startIdx) {
 	for (int i = startIdx; i < startIdx + NR_OF_SAMPLES; i++) {
 		if (buffer[i - 1] < buffer[i] && buffer[i + 1] < buffer[i]) {
 			return i;
@@ -81,7 +70,7 @@ uint8_t uGetMaxIdxInSample(uint8_t startIdx) {
 	}
 }
 
-uint8_t uGetMinIdxInSample(uint8_t startIdx) {
+uint16_t uGetMinIdxInSample(uint16_t startIdx) {
 	for (int i = startIdx; i < startIdx + NR_OF_SAMPLES - 1; i++) {
 		if (buffer[i - 1] > buffer[i] && buffer[i + 1] > buffer[i]) {
 			return i;
@@ -92,14 +81,10 @@ uint8_t uGetMinIdxInSample(uint8_t startIdx) {
 		}
 	}
 }
-uint8_t lmin, lmax, ls;
-uint8_t uGetMinMaxInSample(uint8_t startIdx) {
-	uint8_t min = uGetMinIdxInSample(startIdx);
-	uint8_t max = uGetMaxIdxInSample(startIdx);
-	
-	lmin = min;
-	lmax = max;
-	ls = startIdx;
+
+uint16_t uGetMinMaxInSample(uint16_t startIdx) {
+	uint16_t min = uGetMinIdxInSample(startIdx);
+	uint16_t max = uGetMaxIdxInSample(startIdx);
 	
 	if (min < max) {
 		return min;
@@ -107,29 +92,21 @@ uint8_t uGetMinMaxInSample(uint8_t startIdx) {
 		return max;
 	}
 }
-uint8_t gmmi, gnmmi, b, c, d, e, h, i, j, prevnp;
-uint16_t f, g, gdecoder, gnewdata;
-int32_t uGetNullPointIdx(uint32_t startIdx) {
-	gdecoder = decoderIdx;
-	gnewdata = newDataIdx;
-	
-	uint8_t bufferIdx = toBufferIdx(startIdx);
-	uint8_t minMaxIdx = uGetMinMaxInSample(bufferIdx + 5);
+uint16_t b, c, d, e, f;
+int32_t uGetNullPointIdx(uint32_t startIdx) {	
+	uint16_t bufferIdx = toBufferIdx(startIdx);
+	uint16_t minMaxIdx = uGetMinMaxInSample(bufferIdx + 5);
 	
 	if (minMaxIdx < NR_OF_SAMPLES / 4) {
 		return -1;
 	}
 	
-	uint8_t nextMinMaxIdx = uGetMinMaxInSample(minMaxIdx + 5);
-	uint8_t npIdx = minMaxIdx - (NR_OF_SAMPLES / 4);
+	uint16_t nextMinMaxIdx = uGetMinMaxInSample(minMaxIdx + 5);
+	uint16_t npIdx = minMaxIdx - (NR_OF_SAMPLES / 4);
 	
 	// Check if the value of the nullpoint is near the average, and if
 	// not, check if the previous or next one is, because it could be
 	// that the min or max are shifted by 1
-	prevnp = npIdx;
-	
-	gmmi = minMaxIdx;
-	gnmmi = nextMinMaxIdx;
 	if (!inTolerance(buffer[npIdx], npMedian)) {
 		if (inTolerance(buffer[npIdx - 1], npMedian)) {
 			npIdx--;
@@ -144,33 +121,29 @@ int32_t uGetNullPointIdx(uint32_t startIdx) {
 	// in the middle and not at the start of a sample, so move the start half a period forward
 	if (inTolerance(buffer[npIdx], buffer[minMaxIdx]) || inTolerance(buffer[npIdx], buffer[nextMinMaxIdx]) || !inTolerance((buffer[npIdx] * 2) - buffer[minMaxIdx], buffer[nextMinMaxIdx])) {
 		b = 1;
-		c = inTolerance(buffer[npIdx], buffer[minMaxIdx]);
-		d = inTolerance(buffer[npIdx], buffer[nextMinMaxIdx]);
-		e = !inTolerance((buffer[npIdx] * 2) - buffer[minMaxIdx], buffer[nextMinMaxIdx]);
-		f = (buffer[npIdx] * 2) - buffer[minMaxIdx];
-		g = buffer[nextMinMaxIdx];
-		h = npIdx;
-		i = minMaxIdx;
-		j = nextMinMaxIdx;
+		c = !inTolerance((buffer[npIdx] * 2) - buffer[minMaxIdx], buffer[nextMinMaxIdx]);
+		d = buffer[npIdx] * 2;
+		e = buffer[minMaxIdx];
+		f = buffer[nextMinMaxIdx];
 		npIdx += (NR_OF_SAMPLES / 2);
 	} else {
 		b = 0;
 	}
 	
-	return (224 * (startIdx / 224)) + npIdx;
+	return (384 * (startIdx / 384)) + npIdx;
 }
 
 // This task receives symbols from the Symbol-Queue (vTaskDetectSymbol),
 // applies the defined protocol and sends data bytes into the data queue.
 char data[255];
+char uartData[271];
 void vTaskProtocol(void *pvParameters) {
 	(void) pvParameters;
-	uint8_t queueItem;
+	uint16_t queueItem;
 	uint16_t idx = 0;
-	uint8_t dataLength;
+	uint16_t dataLength;
 	uint16_t checksum;
 	uint16_t rxChecksum;
-	char checksumBuf[50];
 	State_Protocol state = P_Idle1;
 	
 	for(;;) {
@@ -212,6 +185,9 @@ void vTaskProtocol(void *pvParameters) {
 						if (idx == 3) {
 							state = P_Data;
 							idx = 0;
+							for (int i = 0; i < 256; i++) {
+								data[i] = 0;
+							}
 							checksum = dataLength;
 						} else {
 							idx++;
@@ -242,21 +218,20 @@ void vTaskProtocol(void *pvParameters) {
 						
 						if (idx == 8) {
 							// Verify that the sent and calculated checksums match
-							/*if (rxChecksum != checksum) {
-								sprintf(checksumBuf, "Checksum Error, calculated %d, received %d\r\n", checksum, rxChecksum);
-								strcpy(data, checksumBuf);
-							}*/
-						
 							if (rxChecksum == checksum) {
-								for (int i = 0; i < 256; i++) {
-									if (data[i] == 0) {
-										break;
-									}
-								
-									while(!(USARTC0.STATUS & USART_DREIF_bm));
-									USARTC0.DATA = data[i];
+								sprintf(uartData, "Received: %s\r\n", data);
+							/*} else {
+								sprintf(uartData, "Checksum Error, calculated %d, received %d\r\n", checksum, rxChecksum);
+							}*/
+							
+							for (int i = 0; i < 271; i++) {
+								if (uartData[i] == 0) {
+									break;
 								}
-							}
+								
+								while(!(USARTC0.STATUS & USART_DREIF_bm));
+								USARTC0.DATA = uartData[i];
+							}}
 							
 							state = P_Idle1;
 						}
@@ -274,18 +249,18 @@ void vTaskProtocol(void *pvParameters) {
 // current data held in buffer and finding symbols
 // in it. For every symbol that is found, a new
 // message in the Symbol-Queue is queued
-uint8_t nullpoints[255];
-uint8_t a = 0;
+uint16_t nps[250];
+uint16_t npsx = 0;
 void vTaskDetectSymbols(void *pvParameters) {
 	(void) pvParameters;
 	
 	decoderIdx = 0;
 	npMedian = 1190;
-	uint8_t symbol;
+	uint16_t symbol;
 	int32_t nullPointIdx;
-	uint8_t bufferNullPointIdx;
-	uint8_t periodMinIdx;
-	uint8_t periodMaxIdx;
+	uint16_t bufferNullPointIdx;
+	uint16_t periodMinIdx;
+	uint16_t periodMaxIdx;
 	uint16_t maxAmplitude100 = 0;
 	uint16_t maxAmplitude50 = 0;
 	uint16_t minAmplitude50 = 0;
@@ -304,11 +279,10 @@ void vTaskDetectSymbols(void *pvParameters) {
 			}
 			
 			bufferNullPointIdx = toBufferIdx(nullPointIdx);
-			
-			nullpoints[a] = bufferNullPointIdx;
-			a++;
-			if (a >= 255) {
-				a = 0;
+			nps[npsx] = bufferNullPointIdx;
+			npsx++;
+			if (npsx == 250) {
+				npsx = 0;
 			}
 			
 			if (buffer[bufferNullPointIdx + 8] < buffer[bufferNullPointIdx + 24]) {
@@ -334,10 +308,6 @@ void vTaskDetectSymbols(void *pvParameters) {
 				symbol |= (1 << 0);
 			}
 			
-			if (symbol == 3) {
-				symbol = 1;
-			}
-			
 			xQueueSend(symbolQueue, &symbol, 0); // 1,2,1,3, 0,0,1,1, 1,0,2,0, 1,2,1,1, 1,2,3,0, 1,2,3,0, 1,2,3,3, 0,0,0,0, 0,2,0,2, 1,2,1,2
 		} 
 		
@@ -352,7 +322,7 @@ void vTaskFillBuffer(void *pvParameters) {
 	(void) pvParameters;
 	
 	newDataIdx = 0;
-	uint8_t bufferIdx;
+	uint16_t bufferIdx;
 	
 	uint16_t bufferelement[NR_OF_SAMPLES];
 	xEventGroupWaitBits(evDMAState, DMADECREADY, false, true, portMAX_DELAY);
@@ -393,7 +363,7 @@ void vInitUart(){
 void vQuamDec()
 {
 	decoderQueue = xQueueCreate(20, NR_OF_SAMPLES * sizeof(int16_t));
-	symbolQueue = xQueueCreate(250, sizeof(uint8_t));
+	symbolQueue = xQueueCreate(250, sizeof(uint16_t));
 	
 	vInitUart();
 	

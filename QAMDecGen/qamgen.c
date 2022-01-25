@@ -42,11 +42,11 @@ const int16_t sinLookup50[NR_OF_SAMPLES*2] = {0x0,0xC8,0x187,0x238,0x2D3,0x353,0
 	0x0,0xFF38,0xFE79,0xFDC8,0xFD2D,0xFCAD,0xFC4F,0xFC15,
 0xFC01,0xFC15,0xFC4F,0xFCAD,0xFD2D,0xFDC8,0xFE79,0xFF38,};
 
-//#define SENDBUFFER_SIZE 40
+#define SENDBUFFER_SIZE 40
 //													5		H	     E		  L		  L		   O      Checksumme = 34
-//uint8_t sendbuffer[SENDBUFFER_SIZE] = {1,2,1,3, 0,0,1,1, 1,0,2,0, 1,2,1,1, 1,2,3,0, 1,2,3,0, 1,2,3,3, 0,0,0,0, 0,2,0,2, 1,2,1,2};
-#define SENDBUFFER_SIZE 4
-uint8_t sendbuffer[SENDBUFFER_SIZE] = {1,2,1,2};
+uint8_t sendbuffer[SENDBUFFER_SIZE] = {1,2,1,3, 0,0,1,1, 1,0,2,0, 1,2,1,1, 1,2,3,0, 1,2,3,0, 1,2,3,3, 0,0,0,0, 0,2,0,2, 1,2,1,2};
+//#define SENDBUFFER_SIZE 68
+//uint8_t sendbuffer[SENDBUFFER_SIZE] = {1,2,1,3, 0,0,2,3, 1,1,0,1, 1,0,0,1, 1,0,3,1, 0,2,0,0, 1,0,1,0, 1,2,1,1, 1,2,0,3, 1,2,3,3, 1,2,1,0, 1,2,1,1, 1,3,0,2, 0,0,0,0, 0,3,3,0, 1,2,1,2, 1,2,1,2};
 
 void vQuamGen(void *pvParameters) {
 	(void) pvParameters;
