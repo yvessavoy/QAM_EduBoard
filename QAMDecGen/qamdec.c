@@ -92,7 +92,7 @@ uint16_t uGetMinMaxInSample(uint16_t startIdx) {
 		return max;
 	}
 }
-uint16_t b, c, d, e, f;
+
 int32_t uGetNullPointIdx(uint32_t startIdx) {	
 	uint16_t bufferIdx = toBufferIdx(startIdx);
 	uint16_t minMaxIdx = uGetMinMaxInSample(bufferIdx + 5);
@@ -120,14 +120,7 @@ int32_t uGetNullPointIdx(uint32_t startIdx) {
 	// Check for phase or amplitude adjustment in the current sample; This would mean we are
 	// in the middle and not at the start of a sample, so move the start half a period forward
 	if (inTolerance(buffer[npIdx], buffer[minMaxIdx]) || inTolerance(buffer[npIdx], buffer[nextMinMaxIdx]) || !inTolerance((buffer[npIdx] * 2) - buffer[minMaxIdx], buffer[nextMinMaxIdx])) {
-		b = 1;
-		c = !inTolerance((buffer[npIdx] * 2) - buffer[minMaxIdx], buffer[nextMinMaxIdx]);
-		d = buffer[npIdx] * 2;
-		e = buffer[minMaxIdx];
-		f = buffer[nextMinMaxIdx];
 		npIdx += (NR_OF_SAMPLES / 2);
-	} else {
-		b = 0;
 	}
 	
 	return (384 * (startIdx / 384)) + npIdx;
@@ -220,18 +213,16 @@ void vTaskProtocol(void *pvParameters) {
 							// Verify that the sent and calculated checksums match
 							if (rxChecksum == checksum) {
 								sprintf(uartData, "Received: %s\r\n", data);
-							/*} else {
-								sprintf(uartData, "Checksum Error, calculated %d, received %d\r\n", checksum, rxChecksum);
-							}*/
 							
-							for (int i = 0; i < 271; i++) {
-								if (uartData[i] == 0) {
-									break;
-								}
+								for (int i = 0; i < 271; i++) {
+									if (uartData[i] == 0) {
+										break;
+									}
 								
-								while(!(USARTC0.STATUS & USART_DREIF_bm));
-								USARTC0.DATA = uartData[i];
-							}}
+									while(!(USARTC0.STATUS & USART_DREIF_bm));
+									USARTC0.DATA = uartData[i];
+								}
+							}
 							
 							state = P_Idle1;
 						}
@@ -249,8 +240,6 @@ void vTaskProtocol(void *pvParameters) {
 // current data held in buffer and finding symbols
 // in it. For every symbol that is found, a new
 // message in the Symbol-Queue is queued
-uint16_t nps[250];
-uint16_t npsx = 0;
 void vTaskDetectSymbols(void *pvParameters) {
 	(void) pvParameters;
 	
@@ -279,11 +268,9 @@ void vTaskDetectSymbols(void *pvParameters) {
 			}
 			
 			bufferNullPointIdx = toBufferIdx(nullPointIdx);
-			nps[npsx] = bufferNullPointIdx;
-			npsx++;
-			if (npsx == 250) {
-				npsx = 0;
-			}
+			
+			// Re-adjust nullpoint value for future reference
+			npMedian = (npMedian + buffer[bufferNullPointIdx]) / 2;
 			
 			if (buffer[bufferNullPointIdx + 8] < buffer[bufferNullPointIdx + 24]) {
 				periodMinIdx = bufferNullPointIdx + 8;
@@ -308,7 +295,7 @@ void vTaskDetectSymbols(void *pvParameters) {
 				symbol |= (1 << 0);
 			}
 			
-			xQueueSend(symbolQueue, &symbol, 0); // 1,2,1,3, 0,0,1,1, 1,0,2,0, 1,2,1,1, 1,2,3,0, 1,2,3,0, 1,2,3,3, 0,0,0,0, 0,2,0,2, 1,2,1,2
+			xQueueSend(symbolQueue, &symbol, 0);
 		} 
 		
 		vTaskDelay(5 / portTICK_RATE_MS);
